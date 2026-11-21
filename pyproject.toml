@@ -12,6 +12,7 @@ dependencies = [
     "huggingface-hub==2.4.0",
     "numpy>=2,<3",
     "opencv-python-headless>=4.11",
+    "openai-codex",
     "Pillow>=10",
     "pycocotools",
     "sam3",

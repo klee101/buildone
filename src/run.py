@@ -2,7 +2,7 @@
 
 Example: .venv/bin/python -B src/run.py --input /data/photo.jpg
 Override the weight paths with BUILDONE_SAM_WEIGHTS and BUILDONE_QWEN_WEIGHTS.
-The default image-capable agent runtime is the Codex CLI.
+Agent jobs use the Codex SDK and BUILDONE_CODEX_HOME.
 """
 import argparse
 from contextlib import contextmanager
@@ -40,50 +40,6 @@ def await_file(path):
         sleep(.15)
 
 
-class Agents:
-    def __init__(self, out, hosted):
-        self.folder = out / "agents"
-        self.hosted = hosted
-
-    def ask(self, name, prompt, images, *, suffix, session=None):
-        folder = self.folder / name
-        folder.mkdir(parents=True, exist_ok=True)
-        answer = folder / ("response" + suffix)
-        if not (folder/"request.json").exists():
-            write(folder/"request.json", dict(prompt=prompt, images=list(map(str, images)),
-                                              session=session or name, response=str(answer)))
-        if self.hosted and not answer.exists():
-            print(f"Agent request: {folder/'request.json'}", flush=True)
-            await_file(answer)
-        elif not self.hosted and not answer.exists():
-            cmd = ["codex", "--no-daemon", "--ask-for-approval", "never", "--sandbox", "read-only",
-                   "--disable", "apps", "--disable", "plugins", "--disable", "shell_tool",
-                   "--enable", "skip_host_skill_discovery", "exec"]
-            if session:
-                cmd.append("resume")
-            elif name == "identify":
-                cmd.append("--ephemeral")
-            cmd.extend(["--skip-git-repo-check", "--json", "-o", str(answer)])
-            for image in images:
-                cmd.extend(["--image", str(image)])
-            if session:
-                cmd.append(session)
-            cmd.append("-")
-            env = os.environ.copy()
-            for key in ("CODEX_THREAD_ID", "CODEX_SESSION_ID"):
-                env.pop(key, None)
-            with (folder/"events.jsonl").open("w") as log, (folder/"stderr.log").open("w") as err:
-                subprocess.run(cmd, cwd=self.folder.parent, env=env, input=prompt, text=True,
-                               stdout=log, stderr=err, check=True)
-        if not self.hosted and name == "model":
-            events = map(json.loads, (folder/"events.jsonl").read_text().splitlines())
-            session = next(e["thread_id"] for e in events if e.get("type") == "thread.started")
-        output = answer.read_text().strip()
-        if output.startswith("```") and output.endswith("```"):
-            output = output.split("\n", 1)[1].rsplit("```", 1)[0].rstrip()
-        return output + "\n", session or name
-
-
 def worker(args):
     out, name = args.out, args.worker
     folder = out / "cad" / f"v{args.version}" if name == "cad" else out
@@ -115,7 +71,6 @@ def run(args, known):
     if args.hint:
         settings["hint"] = args.hint
     start = perf_counter()
-    agents = Agents(out, args.host_agents)
     timing = dict(started_at=datetime.now(timezone.utc).isoformat(), input=str(args.input),
                   complete=False, stage_seconds={}, scale_source="estimated" if not known else
                   ("supplied" if len(known)==3 else "one supplied axis; other dimensions estimated"),
@@ -180,7 +135,7 @@ def run(args, known):
             target = read(out/"target.json")
         else:
             with stage("identification"):
-                target = identify(args.input, out, args.hint, agents.ask)
+                target = identify(args.input, out, args.hint)
                 write(out/"target.json", target)
         for name in ("sam", "qwen"):
             if args.resume and (out/(name+".json")).exists():
@@ -202,7 +157,7 @@ def run(args, known):
             with stage("cad"):
                 from cad import modeling
                 cad = timing["cad"] = dict(build_count=0, attempts=[])
-                cache = modeling(out, target, sam, known, agents.ask,
+                cache = modeling(out, target, sam, known,
                                  lambda folder, v: invoke("cad", folder, v), cad)
         with stage("usd"):
             from usd import export
@@ -231,8 +186,6 @@ def main():
     parser.add_argument("--mass-kg", type=float)
     parser.add_argument("--static", action="store_true", help="Author a static compound collider")
     parser.add_argument("--resume", action="store_true", help="Continue this run using its completed stages")
-    parser.add_argument("--host-agents", action="store_true",
-                        help="Agent host consumes agents/*/request.json and atomically writes each response")
     parser.add_argument("--host-gpu", action="store_true",
                         help="GPU host executes argv in sam-request.json and qwen-request.json")
     parser.add_argument("--worker", choices=["sam", "qwen", "cad"], help=argparse.SUPPRESS)

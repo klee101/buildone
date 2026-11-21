@@ -9,6 +9,7 @@ from time import perf_counter
 import numpy as np
 from PIL import Image, ImageDraw
 
+import jobs
 from reference import VIEWS
 
 
@@ -114,18 +115,21 @@ def build_version(folder, known):
                 build_cache_seconds=build_seconds, preview_seconds=perf_counter()-start-build_seconds)
 
 
-def modeling(out, target, sam, known, ask, attempt, record):
+def modeling(out, target, sam, known, attempt, record):
     evidence = []
     for view in sam["views"]:
         role = view["role"]
         evidence.extend(out / "evidence" / f"{role}-{kind}.png" for kind in ("source", "isolated"))
     evidence.extend(out / "references" / f"{name}.png" for name in VIEWS)
     skill = (Path(__file__).parent / "skills/cad/SKILL.md").read_text()
-    prompt = (skill + "\nTarget and front: " + json.dumps(target) +
-              "\nSupplied dimensions in mm: " + json.dumps(known) +
-              "\nImages, in order: " + ", ".join(p.name for p in evidence) +
-              "\nWrite the complete model.py as your response, plain Python source only.")
-    source, thread = ask("model", prompt, evidence, suffix=".py")
+    job = out / "jobs" / "cad"
+    contract = (skill + "\nTarget and front: " + json.dumps(target) +
+                "\nSupplied dimensions in mm: " + json.dumps(known) +
+                "\nEvidence images in order: " + ", ".join(p.name for p in evidence))
+    jobs.run(job, contract + "\nWrite the complete first build in model.py.",
+             "Model the object from the supplied views and write model.py.", evidence,
+             outputs=("model.py",))
+    source = (job / "model.py").read_text()
     accepted = None
     for version in range(2):
         folder = out / "cad" / f"v{version}"
@@ -145,18 +149,26 @@ def modeling(out, target, sam, known, ask, attempt, record):
             accepted = folder, result
         if version == 0:
             feedback = {k: result.get(k) for k in ("usable", "dimensions_mm", "dimension_errors", "error")}
-            images = [folder/"preview.png"] if (folder/"preview.png").exists() else []
-            prompt = ("Review v0 against the same evidence and CAD skill. Results: " + json.dumps(feedback)
-                      + "\nReply exactly KEEP if usable or return the complete edited Python source "
-                        "for one targeted correction. Only one more build is available.")
+            preview = folder / "preview.png"
+            images = [*evidence, preview] if preview.is_file() else evidence
+            review_contract = (
+                contract + "\nFirst-build feedback: " + json.dumps(feedback)
+                + '\nKeep model.py intact. Write review.json with {"decision": "keep"} if usable. '
+                'For one targeted correction, write {"decision": "revise"} and the complete revision.py.'
+            )
             try:
-                source, _ = ask("review", prompt, images, session=thread, suffix=".txt")
+                jobs.run(job, review_contract, "Review model.py and the build feedback.", images,
+                         outputs=("review.json",), turn="review", optional_outputs=("revision.py",))
+                decision = json.loads((job / "review.json").read_text())["decision"]
+                if decision == "keep":
+                    break
+                if decision != "revise":
+                    raise ValueError(f"Invalid CAD review decision: {decision}")
+                source = (job / "revision.py").read_text()
             except Exception as exc:
                 if not accepted:
                     raise
                 record["review_error"] = str(exc)
-                break
-            if source.strip() == "KEEP":
                 break
     if not accepted:
         raise RuntimeError(f"No usable CAD build: {record['attempts']}")
