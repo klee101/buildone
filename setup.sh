@@ -4,6 +4,10 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 root=$PWD
 
 git submodule update --init --recursive
+# build123d resolves its package version from the release tag.
+if ! git -C third_party/build123d show-ref --verify --quiet refs/tags/v0.11.1; then
+    git -C third_party/build123d fetch --depth 1 origin tag v0.11.1
+fi
 UV_PROJECT_ENVIRONMENT="$root/.venv" uv sync --locked --link-mode copy
 
 # Apply the merged SAM 3.1 checkpoint loader fix to the installed copy.
