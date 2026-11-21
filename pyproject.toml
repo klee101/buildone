@@ -1,0 +1,10 @@
+[project]
+name = "buildone"
+version = "0.1.0"
+description = "Build one editable CAD and OpenUSD asset from a still or video"
+requires-python = ">=3.11"
+dependencies = ["av>=12", "build123d>=0.10,<0.12", "numpy>=1.26", "Pillow>=10", "usd-core>=24.5"]
+
+# SAM 3.1 and Qwen-Image-2.1-Turbo run in separate external CUDA environments.
+[tool.uv]
+package = false
