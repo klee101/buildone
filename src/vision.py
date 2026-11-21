@@ -2,15 +2,12 @@
 import json
 import math
 import os
-from pathlib import Path
-import sys
 from time import perf_counter
 
 from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 
 
 IDENTIFY = """Select one physical object. Follow the target hint when present, otherwise choose the primary foreground object. For repeated objects, choose one clearly visible instance. Return just JSON with "query" (short English noun phrase for SAM), "description", "front" (an identifiable physical side), "primary" ({"frame": integer ID, "point": [x,y]}), and "secondary" (null or the same instance at a useful distinct angle in another frame). Points must be strictly inside solid target material, normalized 0..1 in each original frame, measured right/down from its top left. Exclude labels and padding from coordinates."""
-SAM_SOURCE = "/home/hpf/projects/vig/vidmap/sources/sam3"
 SAM_WEIGHTS = "/data/hpf/models/sam3.1/sam3.1_multiplex.pt"
 
 
@@ -76,7 +73,6 @@ def identify(source, out, hint, ask):
 def segment(out):
     import numpy as np
     import torch
-    sys.path.insert(0, os.getenv("BUILDONE_SAM_SOURCE", SAM_SOURCE))
     from sam3.model_builder import build_sam3_multiplex_video_predictor
     from sam3.model.sam3_image_processor import Sam3Processor
 

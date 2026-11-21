@@ -2,9 +2,41 @@
 name = "buildone"
 version = "0.1.0"
 description = "Build one editable CAD and OpenUSD asset from a still or video"
-requires-python = ">=3.11"
-dependencies = ["av>=12", "build123d>=0.10,<0.12", "numpy>=1.26", "Pillow>=10", "usd-core>=24.5"]
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "accelerate==1.13.0",
+    "av>=12",
+    "build123d",
+    "diffusers",
+    "einops",
+    "huggingface-hub==2.4.0",
+    "numpy>=2,<3",
+    "opencv-python-headless>=4.11",
+    "Pillow>=10",
+    "pycocotools",
+    "sam3",
+    "setuptools==79.0.1",
+    "tokenizers==0.23.3",
+    "torch==2.8.0+cu129",
+    "torchvision==0.23.0+cu129",
+    "transformers==5.23.0",
+    "usd-core>=24.5",
+]
 
-# SAM 3.1 and Qwen-Image-2.1-Turbo run in separate external CUDA environments.
 [tool.uv]
 package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# SAM's NumPy upper bound predates the NumPy 2 stack needed by build123d.
+override-dependencies = ["numpy>=2,<3"]
+
+[tool.uv.sources]
+build123d = { path = "third_party/build123d", editable = true }
+diffusers = { path = "third_party/diffusers", editable = true }
+sam3 = { path = "third_party/sam3" }
+torch = { index = "pytorch-cu129" }
+torchvision = { index = "pytorch-cu129" }
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true

@@ -1,0 +1,25 @@
+diff --git a/sam3/model_builder.py b/sam3/model_builder.py
+index 64c6308..221abb2 100644
+--- a/sam3/model_builder.py
++++ b/sam3/model_builder.py
+@@ -1119,7 +1119,9 @@ def build_sam3_multiplex_video_predictor(
+ 
+     # Build tracker
+     tracker_model = build_sam3_multiplex_video_model(
+-        checkpoint_path=checkpoint_path,
++        # The supplied checkpoint is for the complete detector/tracker model,
++        # loaded after assembly below. It is not a tracker-only state dict.
++        checkpoint_path=None,
+         load_from_HF=False,
+         multiplex_count=multiplex_count,
+         use_fa3=use_fa3,
+@@ -1222,7 +1224,8 @@ def build_sam3_multiplex_video_predictor(
+                     new_k = "tracker." + k[len("sam2_predictor.") :]
+                 remapped_ckpt[new_k] = v
+             ckpt = remapped_ckpt
+-        missing_keys, unexpected_keys = demo_model.load_state_dict(ckpt, strict=False)
++        # A full multiplex checkpoint must initialize every learned parameter.
++        missing_keys, unexpected_keys = demo_model.load_state_dict(ckpt, strict=True)
+         if missing_keys:
+             print(f"Missing keys ({len(missing_keys)}): {missing_keys[:10]}...")
+         if unexpected_keys:

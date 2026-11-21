@@ -1,10 +1,7 @@
-"""Build one CAD and USD asset from an image or video in a new external run directory.
+"""Build one CAD and USD asset from an image or video.
 
-Example: python -B src/run.py --input /data/photo.jpg --out /data/runs/part
-Use the project dependencies in an external Python environment. SAM and Qwen use
-BUILDONE_SAM_PYTHON and BUILDONE_QWEN_PYTHON (defaults point at the local environments).
-Override the local SAM source tree and model paths with BUILDONE_SAM_SOURCE,
-BUILDONE_SAM_WEIGHTS and BUILDONE_QWEN_WEIGHTS.
+Example: .venv/bin/python -B src/run.py --input /data/photo.jpg
+Override the weight paths with BUILDONE_SAM_WEIGHTS and BUILDONE_QWEN_WEIGHTS.
 The default image-capable agent runtime is the Codex CLI.
 """
 import argparse
@@ -17,16 +14,15 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import mkdtemp
 from time import perf_counter, sleep
 import traceback
 
 sys.dont_write_bytecode = True
 ENTRY = Path(__file__).resolve()
 ROOT = ENTRY.parents[1]
-GPU_PYTHON = {
-    "sam": "/home/hpf/projects/vig/vidmap/semantic_sam_prototype/.venv/bin/python",
-    "qwen": "/home/hpf/projects/vig/sage/runtime/qwen_image21_env/bin/python",
-}
+OUTPUT = ROOT / "output"
+GPU_WORKERS = {"sam", "qwen"}
 
 
 def write(path, value):
@@ -154,12 +150,12 @@ def run(args, known):
             write(out/"timing.json", timing)
 
     def invoke(name, folder, version=0):
-        python = os.getenv(f"BUILDONE_{name.upper()}_PYTHON", GPU_PYTHON.get(name, sys.executable))
+        python = os.getenv(f"BUILDONE_{name.upper()}_PYTHON", sys.executable)
         cmd = [python, "-B", "-u", str(ENTRY), "--out", str(out), "--worker", name]
         if name == "cad":
             cmd.extend(["--version", str(version)])
         dest = folder/(name+".json")
-        if args.host_gpu and name in GPU_PYTHON:
+        if args.host_gpu and name in GPU_WORKERS:
             request = out/(name+"-request.json")
             if not request.exists():
                 write(request, dict(argv=cmd, result=str(dest)))
@@ -228,7 +224,7 @@ def run(args, known):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, help="Source image or video")
-    parser.add_argument("--out", required=True, type=Path, help="Empty directory outside BuildOne")
+    parser.add_argument("--out", type=Path, help="Run directory (default: a new directory under output/)")
     parser.add_argument("--hint", help="Preferred target")
     for axis in ("width", "depth", "height"):
         parser.add_argument(f"--{axis}-mm", type=float)
@@ -242,9 +238,12 @@ def main():
     parser.add_argument("--worker", choices=["sam", "qwen", "cad"], help=argparse.SUPPRESS)
     parser.add_argument("--version", type=int, choices=[0, 1], default=0, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    args.out = args.out.resolve()
-    if args.out.is_relative_to(ROOT):
-        parser.error("Generated outputs belong outside the project repository")
+    if args.out is not None:
+        args.out = args.out.resolve()
+        if args.out.is_relative_to(ROOT) and not args.out.is_relative_to(OUTPUT):
+            parser.error("Use output/ for generated files inside BuildOne")
+    elif args.worker or args.resume:
+        parser.error("--out is required when resuming or launching a worker")
     os.environ.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
                       TOKENIZERS_PARALLELISM="false", OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="8")
     if args.worker:
@@ -258,7 +257,12 @@ def main():
     values = list(known.values()) + ([args.mass_kg] if args.mass_kg is not None else [])
     if len(known) == 2 or any(not math.isfinite(v) or v <= 0 for v in values):
         parser.error("Supply one known axis or all three. Dimensions and mass must be positive and finite.")
-    args.out.mkdir(parents=True, exist_ok=True)
+    if args.out is None:
+        OUTPUT.mkdir(exist_ok=True)
+        args.out = Path(mkdtemp(prefix=f"{args.input.stem}-", dir=OUTPUT))
+    else:
+        args.out.mkdir(parents=True, exist_ok=True)
+    print(f"Run directory: {args.out}", flush=True)
     lock = os.open(args.out, os.O_RDONLY)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
