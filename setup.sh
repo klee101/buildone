@@ -26,7 +26,7 @@ fi
 git submodule update --init --recursive
 # build123d resolves its package version from the release tag.
 if ! git -C third_party/build123d show-ref --verify --quiet refs/tags/v0.11.1; then
-    git -C third_party/build123d fetch --depth 1 origin tag v0.11.1
+    git -C third_party/build123d fetch --no-tags --depth 1 origin tag v0.11.1
 fi
 UV_PROJECT_ENVIRONMENT="$root/.venv" "$uv_bin" sync --python 3.11 --locked --link-mode copy
 
@@ -49,7 +49,8 @@ PY
 
 codex_bin=$(.venv/bin/python -c 'from codex_cli_bin import bundled_codex_path; print(bundled_codex_path())')
 if [[ -n ${BUILDONE_CODEX_HOME:-} ]]; then
-    export CODEX_HOME="$BUILDONE_CODEX_HOME"
+    codex_dir=$(.venv/bin/python -c 'import os; from pathlib import Path; print(Path(os.environ["BUILDONE_CODEX_HOME"]).expanduser().resolve())')
+    export CODEX_HOME="$codex_dir"
     mkdir -p "$CODEX_HOME"
 fi
 if ! "$codex_bin" login status; then
@@ -62,4 +63,4 @@ if ! "$codex_bin" login status; then
         exit 1
     fi
 fi
-echo "Ready. Run ./run.sh --input data/*.jpg"
+echo "Ready. Run ./run.sh --input data/*.jpg${1:+ $1}"

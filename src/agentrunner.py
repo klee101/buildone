@@ -14,7 +14,7 @@ from openai_codex import ApprovalMode, Codex, CodexConfig, LocalImageInput, Sand
 def codex_env():
     env = {}
     if home := os.getenv("BUILDONE_CODEX_HOME"):
-        env["CODEX_HOME"] = str(Path(home).expanduser().resolve())
+        env["CODEX_HOME"] = str((Path(__file__).resolve().parents[1] / Path(home).expanduser()).resolve())
     if directory := os.getenv("BUILDONE_BWRAP_DIR"):
         bwrap = Path(directory).expanduser().resolve() / "bwrap"
         if not bwrap.is_file():

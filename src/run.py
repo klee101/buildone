@@ -233,6 +233,15 @@ def main():
     values = list(known.values()) + ([args.mass_kg] if args.mass_kg is not None else [])
     if len(known) == 2 or any(not math.isfinite(v) or v <= 0 for v in values):
         parser.error("Supply one known axis or all three. Dimensions and mass must be positive and finite.")
+    if not args.resume and not args.host_gpu:
+        from weights import check_qwen, sam_ready, sam_weights
+        if not sam_ready():
+            parser.error(f"Missing or incomplete SAM checkpoint at {sam_weights()}. Run ./setup.sh.")
+        if args.qwen_views:
+            try:
+                check_qwen()
+            except (FileNotFoundError, ValueError, KeyError) as exc:
+                parser.error(str(exc))
     if args.out is None:
         OUTPUT.mkdir(exist_ok=True)
         args.out = Path(mkdtemp(prefix=f"{args.input[0].stem}-", dir=OUTPUT))

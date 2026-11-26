@@ -6,4 +6,5 @@ if [[ ! -x "$root/.venv/bin/python" ]]; then
     echo "Run $root/setup.sh first." >&2
     exit 1
 fi
+export PATH="$root/.venv/bin:$PATH"
 exec "$root/.venv/bin/python" -B "$root/src/run.py" "$@"
