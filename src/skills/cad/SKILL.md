@@ -3,7 +3,7 @@ name: cad
 description: Model a single photographed object as editable build123d solids and convex collision pieces, then review one orthographic build preview.
 ---
 
-Use the original source crop(s) for observed geometry. The isolated crop identifies the selected instance among neighbors. The four generated views can suggest hidden structure. When they disagree with a visible surface, follow the photograph.
+Use the original source crop(s) for observed geometry. The isolated crop identifies the selected instance among neighbors. If supplied, the four generated views can suggest hidden structure. When they disagree with a visible surface, follow the photograph.
 
 Write an importable Python model using build123d. Work in millimeters with X across, Y deep and Z up. Front, left and right cameras are at -Y, -X and +X. In the top view (+Z), the front edge is at the bottom. Honor the identified physical front. Group named size parameters at the top. Match all supplied axes and estimate any missing dimensions. Define SCALE_NOTE as a short string explaining the scale evidence.
 

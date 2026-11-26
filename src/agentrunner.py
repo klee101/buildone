@@ -12,8 +12,9 @@ from openai_codex import ApprovalMode, Codex, CodexConfig, LocalImageInput, Sand
 
 
 def codex_env():
-    home = os.getenv("BUILDONE_CODEX_HOME") or Path.home() / ".buildone" / "codex"
-    env = {"CODEX_HOME": str(Path(home).expanduser().resolve())}
+    env = {}
+    if home := os.getenv("BUILDONE_CODEX_HOME"):
+        env["CODEX_HOME"] = str(Path(home).expanduser().resolve())
     if directory := os.getenv("BUILDONE_BWRAP_DIR"):
         bwrap = Path(directory).expanduser().resolve() / "bwrap"
         if not bwrap.is_file():
@@ -42,8 +43,8 @@ def run_job(job_dir, prompt, images, turn):
         logs /= turn
     logs.mkdir(parents=True, exist_ok=True)
 
-    model = os.getenv("BUILDONE_AGENT_MODEL", "gpt-6-astra")
-    effort = os.getenv("BUILDONE_AGENT_EFFORT", "high")
+    model = os.getenv("BUILDONE_AGENT_MODEL")
+    effort = os.getenv("BUILDONE_AGENT_EFFORT")
     inputs = [TextInput(text=prompt)]
     inputs.extend(LocalImageInput(path=str(job / image)) for image in images)
     start = perf_counter()

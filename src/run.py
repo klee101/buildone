@@ -1,4 +1,4 @@
-"""Build one CAD and USD asset from an image or video.
+"""Build editable CAD, a USD asset and an offline viewer from photos or one video.
 
 Example: .venv/bin/python -B src/run.py --input /data/photo.jpg
 Override the weight paths with BUILDONE_SAM_WEIGHTS and BUILDONE_QWEN_WEIGHTS.
@@ -54,7 +54,8 @@ def worker(args):
             result = generate(out)
         else:
             from cad import build_version
-            result = build_version(folder, read(out/"settings.json")["known_mm"])
+            result = build_version(folder, {**read(out/"target.json").get("size_mm", {}),
+                                            **read(out/"settings.json")["known_mm"]})
         result.update(worker_seconds=perf_counter()-start)
         write(dest, result)
     except Exception:
@@ -67,23 +68,31 @@ def run(args, known):
     out = args.out
     if not args.resume and out.exists() and any(out.iterdir()):
         raise FileExistsError(f"Choose an empty output directory: {out}")
-    settings = dict(input=str(args.input), known_mm=known, static=args.static, mass_kg=args.mass_kg)
+    source = str(args.input[0]) if len(args.input) == 1 else list(map(str, args.input))
+    settings = dict(input=source, known_mm=known, static=args.static, mass_kg=args.mass_kg)
+    if args.size_prompt:
+        settings["size_prompt"] = args.size_prompt
     if args.hint:
         settings["hint"] = args.hint
     start = perf_counter()
-    timing = dict(started_at=datetime.now(timezone.utc).isoformat(), input=str(args.input),
+    timing = dict(started_at=datetime.now(timezone.utc).isoformat(), input=source,
                   complete=False, stage_seconds={}, scale_source="estimated" if not known else
                   ("supplied" if len(known)==3 else "one supplied axis; other dimensions estimated"),
                   known_mm=known)
     if args.resume:
-        if read(out/"settings.json") != settings:
-            raise ValueError("Resume requires the original input, dimensions, hint and physics settings")
+        original = read(out/"settings.json")
+        # Runs created before the opt-in switch always generated reference views.
+        original.setdefault("qwen_views", True)
+        settings["qwen_views"] = original["qwen_views"] if args.qwen_views is None else args.qwen_views
+        if original != settings:
+            raise ValueError("Resume requires the original input, dimensions, hint, Qwen and physics settings")
         timing = read(out/"timing.json")
         if timing["complete"]:
             return
         start -= (datetime.now(timezone.utc)-datetime.fromisoformat(timing["started_at"])).total_seconds()
         timing.pop("error", None)
     else:
+        settings["qwen_views"] = bool(args.qwen_views)
         write(out/"settings.json", settings)
         write(out/"timing.json", timing)
 
@@ -135,9 +144,15 @@ def run(args, known):
             target = read(out/"target.json")
         else:
             with stage("identification"):
-                target = identify(args.input, out, args.hint)
+                target = identify(args.input, out, args.hint, args.size_prompt)
                 write(out/"target.json", target)
-        for name in ("sam", "qwen"):
+        if args.size_prompt:
+            known = {**target["size_mm"], **known}
+            timing.update(size_prompt=args.size_prompt, known_mm=known,
+                          scale_source="size prompt and explicit mm overrides" if settings["known_mm"]
+                          else ("size prompt" if known else "estimated with size prompt"))
+        stages = ("sam", "qwen") if settings["qwen_views"] else ("sam",)
+        for name in stages:
             if args.resume and (out/(name+".json")).exists():
                 result = read(out/(name+".json"))
                 if "error" in result:
@@ -158,12 +173,16 @@ def run(args, known):
                 from cad import modeling
                 cad = timing["cad"] = dict(build_count=0, attempts=[])
                 cache = modeling(out, target, sam, known,
-                                 lambda folder, v: invoke("cad", folder, v), cad)
+                                 lambda folder, v: invoke("cad", folder, v), cad,
+                                 qwen_views=settings["qwen_views"])
         with stage("usd"):
             from usd import export
             temp = out/"asset.partial.usd"
             timing["physics"] = export(cache, temp, args.static, args.mass_kg)
             temp.replace(out/"asset.usd")
+        with stage("viewer"):
+            from viewer import export_viewer
+            export_viewer(cache, out/"viewer.html")
         timing.update(complete=True, finished_at=datetime.now(timezone.utc).isoformat())
     except Exception as exc:
         timing["error"] = str(exc)
@@ -178,16 +197,20 @@ def run(args, known):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, help="Source image or video")
+    parser.add_argument("--input", type=Path, action="extend", nargs="+",
+                        help="One video or one or more photos of the same object (repeatable)")
     parser.add_argument("--out", type=Path, help="Run directory (default: a new directory under output/)")
     parser.add_argument("--hint", help="Preferred target")
+    parser.add_argument("--size-prompt", help="Optional natural-language size description")
+    parser.add_argument("--qwen-views", action="store_true", default=None,
+                        help="Generate four supplemental Qwen views for CAD (default: use photos only)")
     for axis in ("width", "depth", "height"):
         parser.add_argument(f"--{axis}-mm", type=float)
     parser.add_argument("--mass-kg", type=float)
     parser.add_argument("--static", action="store_true", help="Author a static compound collider")
     parser.add_argument("--resume", action="store_true", help="Continue this run using its completed stages")
     parser.add_argument("--host-gpu", action="store_true",
-                        help="GPU host executes argv in sam-request.json and qwen-request.json")
+                        help="GPU host executes the SAM request and, with --qwen-views, the Qwen request")
     parser.add_argument("--worker", choices=["sam", "qwen", "cad"], help=argparse.SUPPRESS)
     parser.add_argument("--version", type=int, choices=[0, 1], default=0, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -202,9 +225,9 @@ def main():
     if args.worker:
         worker(args)
         return
-    if args.input is None or not args.input.is_file():
-        parser.error("Provide a readable image or video with --input")
-    args.input = args.input.resolve()
+    if not args.input or not all(p.is_file() for p in args.input):
+        parser.error("Provide existing image files or one video with --input")
+    args.input = [p.resolve() for p in args.input]
     known = {k: getattr(args, k+"_mm") for k in ("width", "depth", "height")
              if getattr(args, k+"_mm") is not None}
     values = list(known.values()) + ([args.mass_kg] if args.mass_kg is not None else [])
@@ -212,7 +235,7 @@ def main():
         parser.error("Supply one known axis or all three. Dimensions and mass must be positive and finite.")
     if args.out is None:
         OUTPUT.mkdir(exist_ok=True)
-        args.out = Path(mkdtemp(prefix=f"{args.input.stem}-", dir=OUTPUT))
+        args.out = Path(mkdtemp(prefix=f"{args.input[0].stem}-", dir=OUTPUT))
     else:
         args.out.mkdir(parents=True, exist_ok=True)
     print(f"Run directory: {args.out}", flush=True)

@@ -115,18 +115,23 @@ def build_version(folder, known):
                 build_cache_seconds=build_seconds, preview_seconds=perf_counter()-start-build_seconds)
 
 
-def modeling(out, target, sam, known, attempt, record):
+def modeling(out, target, sam, known, attempt, record, *, qwen_views):
     evidence = []
     for view in sam["views"]:
         role = view["role"]
         evidence.extend(out / "evidence" / f"{role}-{kind}.png" for kind in ("source", "isolated"))
-    evidence.extend(out / "references" / f"{name}.png" for name in VIEWS)
+    if qwen_views:
+        evidence.extend(out / "references" / f"{name}.png" for name in VIEWS)
     skill = (Path(__file__).parent / "skills/cad/SKILL.md").read_text()
     job = out / "jobs" / "cad"
     contract = (skill + "\nTarget and front: " + json.dumps(target) +
                 "\nSupplied dimensions in mm: " + json.dumps(known) +
                 "\nEvidence images in order: " + ", ".join(p.name for p in evidence))
-    jobs.run(job, contract + "\nWrite the complete first build in model.py.",
+    if size_prompt := json.loads((out / "settings.json").read_text()).get("size_prompt"):
+        contract += ("\nOriginal size description: " + json.dumps(size_prompt) +
+                     ". Match the supplied overall dimensions in mm; use the text for feature sizes.")
+    jobs.run(job, contract + "\nWrite model.py and finish this turn. The coordinator builds it and "
+             "supplies the preview and measurements in a separate review turn.",
              "Model the object from the supplied views and write model.py.", evidence,
              outputs=("model.py",))
     source = (job / "model.py").read_text()

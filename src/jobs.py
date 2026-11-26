@@ -10,7 +10,7 @@ import sys
 RUNNER = Path(__file__).with_name("agentrunner.py")
 RULES = """## Job rules
 
-Work inside this directory and use the supplied inputs. Use Python's standard library
+Work inside this directory and use the supplied inputs. Use python3 and its standard library
 if needed to write outputs. The pipeline executes CAD builds. In REPORT.md, briefly
 state what you did, how you checked it, and any doubts.
 """

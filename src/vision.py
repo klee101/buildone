@@ -7,10 +7,10 @@ from time import perf_counter
 from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 
 import jobs
+from weights import sam_weights
 
 
 IDENTIFY = """Select one physical object. Follow the target hint when present, otherwise choose the primary foreground object. For repeated objects, choose one clearly visible instance. Write target.json as JSON with "query" (short English noun phrase for SAM), "description", "front" (an identifiable physical side), "primary" ({"frame": integer ID, "point": [x,y]}), and "secondary" (null or the same instance at a useful distinct angle in another frame). Points must be strictly inside solid target material, normalized 0..1 in each original frame, measured right/down from its top left. Exclude labels and padding from coordinates."""
-SAM_WEIGHTS = "/data/hpf/models/sam3.1/sam3.1_multiplex.pt"
 
 
 def frames(path):
@@ -35,14 +35,23 @@ def frames(path):
     return sampled, True
 
 
-def identify(source, out, hint):
-    samples, video = frames(source)
+def identify(sources, out, hint, size_prompt=None):
+    if isinstance(sources, (str, os.PathLike)):
+        sources = [sources]
+    multiple = len(sources) > 1
+    if multiple:
+        samples = {}
+        for index, path in enumerate(sources):
+            with Image.open(path) as source:
+                samples[index] = ImageOps.exif_transpose(source).convert("RGB")
+    else:
+        samples, _ = frames(sources[0])
     evidence = out / "evidence"
     evidence.mkdir(exist_ok=True)
     for frame_id, frame in samples.items():
         frame.save(evidence / f"frame-{frame_id}.png")
-    if not video:
-        sheet = evidence / "frame-0.png"
+    if len(samples) == 1:
+        sheet = evidence / f"frame-{next(iter(samples))}.png"
     else:
         width, height = 512, 384
         cols = min(3, len(samples))
@@ -57,6 +66,18 @@ def identify(source, out, hint):
         sheet_image.save(sheet)
     job = out / "jobs" / "identify"
     contract = IDENTIFY + f"\nFrame IDs: {list(samples)}. Target hint: {hint or '(none)'}"
+    if multiple:
+        contract += ("\nThese photos show the same object. Choose the most informative primary. "
+                     "Set secondary to null and write additional as an array of {frame, point} "
+                     "for EVERY other photo. Use coordinates relative to each photo's unpadded area.")
+    if size_prompt:
+        contract += ("\nSize description: " + json.dumps(size_prompt) +
+                     ". Orient the CAD axes to the physical object across views, Z up. "
+                     "Write size_mm using literal keys width, depth, height for the X, Y, Z axes. "
+                     "Include only explicitly supplied overall dimensions converted to mm. "
+                     "Treat approximate values as nominal. "
+                     "Leave size_mm empty for localized features or ambiguous dimensions. "
+                     "Explain the interpreted measurement and orientation in size_interpretation.")
     jobs.run(job, contract, "Identify the target in the attached image and write target.json.",
              [sheet], outputs=("target.json",))
     result = json.loads((job / "target.json").read_text())
@@ -64,13 +85,35 @@ def identify(source, out, hint):
         if not isinstance(result[key], str) or not result[key].strip():
             raise ValueError(f"Missing {key} in target identification")
     primary, secondary = result["primary"], result.get("secondary")
+    if multiple and secondary:
+        # Every supplied photo is required. Reserve the optional secondary role for video.
+        result["additional"] = [secondary, *result.get("additional", [])]
+        secondary = result["secondary"] = None
     if secondary and secondary["frame"] == primary["frame"]:
         raise ValueError("Secondary view duplicates the primary frame")
-    for view in [primary] + ([secondary] if secondary else []):
+    views = [primary] + ([secondary] if secondary else []) + result.get("additional", [])
+    for view in views:
         point = view["point"]
         if (type(view["frame"]) is not int or view["frame"] not in samples or len(point) != 2
                 or not all(type(v) in (float, int) and 0 < v < 1 for v in point)):
             raise ValueError(f"Invalid selected view: {view}")
+    if multiple and sorted(v["frame"] for v in views) != sorted(samples):
+        raise ValueError("Target identification must locate the object once in every input photo")
+    if size_prompt:
+        sizes = result["size_mm"]
+        axes = {"x": "width", "y": "depth", "z": "height"}
+        if isinstance(sizes, dict):
+            normalized = {axes.get(k.lower(), k.lower()): v for k, v in sizes.items()}
+            if len(normalized) != len(sizes):
+                raise ValueError(f"Duplicate size axes: {sizes}")
+            sizes = result["size_mm"] = normalized
+        if not isinstance(sizes, dict) or any(
+            k not in ("width", "depth", "height") or type(v) not in (int, float)
+            or not math.isfinite(v) or v <= 0 for k, v in sizes.items()
+        ):
+            raise ValueError(f"Invalid interpreted dimensions: {sizes}")
+    else:
+        result.pop("size_mm", None)
     return result
 
 
@@ -84,7 +127,7 @@ def segment(out):
     torch.set_num_threads(8)
     torch.cuda.set_device(0)
     start = perf_counter()
-    checkpoint = os.getenv("BUILDONE_SAM_WEIGHTS", SAM_WEIGHTS)
+    checkpoint = str(sam_weights())
     predictor = build_sam3_multiplex_video_predictor(
         checkpoint_path=checkpoint, use_fa3=False, use_rope_real=False,
         compile=False, warm_up=False, async_loading_frames=False)
@@ -94,8 +137,9 @@ def segment(out):
     result = dict(checkpoint=checkpoint, model_init_seconds=perf_counter()-start,
                   inference_seconds=0.0, views=[])
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-        for role in ("primary", "secondary"):
-            view = target.get(role)
+        views = [(role, target.get(role)) for role in ("primary", "secondary")]
+        views.extend((f"view-{view['frame']}", view) for view in target.get("additional", []))
+        for role, view in views:
             if not view:
                 continue
             pic = Image.open(out / "evidence" / f"frame-{view['frame']}.png").convert("RGB")
@@ -111,7 +155,7 @@ def segment(out):
                 if role == "secondary":
                     result["secondary_skipped"] = "No SAM mask contained the selected point"
                     continue
-                raise ValueError(f"No SAM mask contains primary point {view['point']} for {target['query']!r}")
+                raise ValueError(f"No SAM mask contains {role} point {view['point']} for {target['query']!r}")
             matte = Image.fromarray(np.uint8(mask)*255)
             x0, y0, x1, y1 = matte.getbbox()
             pad = max(3, round(.035*max(x1-x0, y1-y0)))
